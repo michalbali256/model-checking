@@ -72,36 +72,18 @@ proctype cpu(ID_T id)
 }
 
 
-inline acquire_lock_and_send_bus_msg(msg, id, addr, val)
+inline acquire_lock_and_send_bus_msg(msg, id, addr, val, recp)
 {
     int index
     atomic
     {
         printf("clock %d\n", id)
-        caches[id].lock == 0 && caches[id].op_waiting == 0 && caches[id].snooper_waiting == 0
+        caches[id].lock == 0 && caches[id].snooper_waiting == 0 && caches[id].op_waiting == 0
         caches[id].lock = 1
         printf("clocked %d\n", id)
-        for(index : 0 .. PROC_COUNT-1)
-        {
-            if
-            :: (index != id) -> caches[index].op_waiting = 1
-            :: else -> skip
-            fi
-        }
-        for(index : 0 .. PROC_COUNT-1)
-        {
-            if
-            :: (index != id) -> printf("staying %d\n", index); bus_chan[index]!msg,addr,val
-            :: else -> skip
-            fi
-        }
-        for(index : 0 .. PROC_COUNT-1)
-        {
-            if
-            :: (index != id) -> caches[index].op_waiting = 0
-            :: else -> skip
-            fi
-        }
+        caches[other_cpu].op_waiting = 1
+        bus_chan[recp]!msg,addr,val
+        caches[other_cpu].op_waiting = 0
         printf("read %d %d\n", id, addr)
     
     }
@@ -145,7 +127,7 @@ proctype cache(ID_T id; ID_T other_cpu)
         :: (caches[id].state[addr] != invalid) //cache hit
         :: else -> 
             printf("r %d\n", id)
-            acquire_lock_and_send_bus_msg(bus_read, id, addr, 0)
+            acquire_lock_and_send_bus_msg(bus_read, id, addr, 0, other_cpu)
             
             bool received_request = false
             bool cache_to_cache_transfer
@@ -175,7 +157,7 @@ proctype cache(ID_T id; ID_T other_cpu)
         fi
     :: cpu_chan[id]?proc_write,addr,val ->
         printf("w %d\n", id)
-        acquire_lock_and_send_bus_msg(bus_readx, id, addr, 0)
+        acquire_lock_and_send_bus_msg(bus_readx, id, addr, 0, other_cpu)
         if
         :: caches[id].state[addr] == exclusive ->
             caches[id].state[addr] = modified
@@ -322,7 +304,7 @@ init
 byte never_id
 byte never_ad = 0
 mtype:mesi never_seen = invalid 
-bool correct = true
+
 proctype correctness()
 {
 s:  do
@@ -342,12 +324,12 @@ s:  do
                 {
                     if
                     :: never_seen == invalid && caches[never_id].state[never_ad] != invalid -> never_seen = caches[never_id].state[never_ad]
-                    :: never_seen == exclusive && caches[never_id].state[never_ad] != invalid -> printf("1"); correct = false
-                    :: never_seen == modified && caches[never_id].state[never_ad] != invalid -> printf("2"); correct = false
+                    :: never_seen == exclusive && caches[never_id].state[never_ad] != invalid -> assert(false)
+                    :: never_seen == modified && caches[never_id].state[never_ad] != invalid -> assert(false)
                     :: (never_seen == shared &&
                         caches[never_id].state[never_ad] != invalid &&
-                        caches[never_id].state[never_ad] != shared) -> printf("3"); correct = false
-                    :: caches[never_id].state[never_ad] != modified && caches[never_id].state[never_ad] != invalid && caches[never_id].val[never_ad] != memory[never_ad] -> printf("4"); correct = false
+                        caches[never_id].state[never_ad] != shared) -> assert(false)
+                    :: caches[never_id].state[never_ad] != modified && caches[never_id].state[never_ad] != invalid && caches[never_id].val[never_ad] != memory[never_ad] -> assert(false)
                     :: else -> skip
                     fi
                 }
@@ -356,5 +338,3 @@ s:  do
         }
     od
 }
-
-ltl { [] correct}
