@@ -43,7 +43,7 @@ mtype:mesi = {
 }
 
 chan cpu_chan[PROC_COUNT] = [0] of {mtype:cpu_msg, ADDRESS_T, VALUE_T };
-chan bus_chan[PROC_COUNT] = [0] of {mtype:bus_msg, ID_T, ADDRESS_T, VALUE_T }
+chan bus_chan[PROC_COUNT] = [0] of {mtype:bus_msg, ADDRESS_T, VALUE_T }
 chan leader_chan[PROC_COUNT] = [0] of {mtype:leader_msg, ID_T}
 chan memory_chan = [0] of {mtype:bus_msg, ID_T, ADDRESS_T, VALUE_T };
 bool in_way
@@ -92,7 +92,7 @@ inline acquire_lock_and_send_bus_msg(msg, id, addr, val)
         for(index : 0 .. PROC_COUNT-1)
         {
             if
-            :: (index != id) -> printf("staying %d\n", index); bus_chan[index]!msg,id,addr,val
+            :: (index != id) -> printf("staying %d\n", index); bus_chan[index]!msg,addr,val
             :: else -> skip
             fi
         }
@@ -133,7 +133,9 @@ inline update_used_queue(id, addr)
 }
 
 
-proctype cache(ID_T id) {
+
+proctype cache(ID_T id; ID_T other_cpu)
+{
     mtype:msg m
     ADDRESS_T addr
     VALUE_T val
@@ -147,7 +149,6 @@ proctype cache(ID_T id) {
             acquire_lock_and_send_bus_msg(bus_read, id, addr, 0)
             byte av_count = 0
             byte all_count = 0
-            ID_T rid
             bool sent_request = false
             bool received_request = false
             
@@ -155,11 +156,11 @@ proctype cache(ID_T id) {
             :: all_count == PROC_COUNT - 1 -> break
             :: all_count < PROC_COUNT - 1 ->
                 if 
-                :: leader_chan[id]?leader_av,rid ->
+                :: leader_chan[id]?leader_av,_ ->
                     {
                         if
-                        :: sent_request -> leader_chan[rid]!leader_na,id
-                        :: else -> leader_chan[rid]!leader_av,id; sent_request = true;
+                        :: sent_request -> leader_chan[other_cpu]!leader_na,id
+                        :: else -> leader_chan[other_cpu]!leader_av,id; sent_request = true;
                         fi
                         av_count++;
                         all_count++;
@@ -174,7 +175,7 @@ proctype cache(ID_T id) {
             fi
             
             
-            bus_chan[id]?bus_flushopt,_,_,val
+            bus_chan[id]?bus_flushopt,_,val
             
             update_used_queue(id, addr)
             
@@ -215,13 +216,12 @@ proctype cache(ID_T id) {
     od
 }
 
-proctype snooper(ID_T id)
+proctype snooper(ID_T id; ID_T other_cpu)
 {
-    ID_T rid
     ADDRESS_T addr
     VALUE_T val
     do
-    :: atomic { bus_chan[id]?bus_read,rid,addr,_ ->
+    :: atomic { bus_chan[id]?bus_read,addr,_ ->
                 
             printf("slock %d\n", id)
             caches[id].snooper_waiting = 1
@@ -235,40 +235,40 @@ proctype snooper(ID_T id)
         :: caches[id].state[addr] == exclusive ->
             {
                 caches[id].state[addr] = shared
-                leader_chan[rid]!leader_av,id
+                leader_chan[other_cpu]!leader_av,id
                 leader_chan[id]?leader_av,_
-                bus_chan[rid]!bus_flushopt, id, addr, caches[id].val[addr]
+                bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
             }
         :: caches[id].state[addr] == modified ->
             {
                 in_way = true
                 memory_chan!bus_flush, id, addr, caches[id].val[addr]
                 caches[id].state[addr] = shared
-                leader_chan[rid]!leader_av,id
+                leader_chan[other_cpu]!leader_av,id
                 leader_chan[id]?leader_av,_
-                bus_chan[rid]!bus_flushopt, id, addr, caches[id].val[addr]
+                bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
                 
             }
         :: caches[id].state[addr] == shared ->    
             {
-                leader_chan[rid]!leader_av,id
+                leader_chan[other_cpu]!leader_av,id
                 
                 if
-                :: leader_chan[id]?leader_av,rid -> bus_chan[rid]!bus_flushopt, id, addr, caches[id].val[addr]
+                :: leader_chan[id]?leader_av,_ -> bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
                 :: leader_chan[id]?leader_na,_
                 fi
             }        
         :: caches[id].state[addr] == invalid ->
             {
-                printf("rid %d %d\n",id, rid)
-                leader_chan[rid]!leader_na,id
+                printf("rid %d %d\n",id, other_cpu)
+                leader_chan[other_cpu]!leader_na,id
             }
         fi
         
         printf("sunlock %d\n", id)
         caches[id].lock = 0
 
-    :: atomic { bus_chan[id]?bus_readx,rid,addr,_ ->
+    :: atomic { bus_chan[id]?bus_readx,addr,_ ->
             printf("wslock %d\n", id)
             caches[id].snooper_waiting = 1
             caches[id].lock == 0
@@ -282,7 +282,6 @@ proctype snooper(ID_T id)
         :: else ->
             if
             :: caches[id].state[addr] == modified ->
-                    printf("winway %d\n", id)
                     in_way = true
                     memory_chan!bus_flush,id,addr,caches[id].val[addr]
             :: else -> skip
@@ -290,7 +289,7 @@ proctype snooper(ID_T id)
             caches[id].used_queue??eval(addr)
             caches[id].state[addr] = invalid
         fi
-        printf("wsunlocku %d\n", id)
+        printf("wsunlock %d\n", id)
         caches[id].lock = 0
     od
 }
@@ -305,15 +304,12 @@ proctype main_memory()
     do
     :: atomic {memory_chan?bus_read,rid,addr,_ ->
             
-            bus_chan[rid]!bus_flushopt,255,addr,memory[addr]
+            bus_chan[rid]!bus_flushopt,addr,memory[addr]
             }
     :: atomic {memory_chan?bus_flush,_,addr,val ->
-    {
             printf("written %d %d\n", addr, val)
             memory[addr] = val
             in_way = false
-            
-    }
             }
     od
 }
@@ -335,14 +331,15 @@ init
     
     run correctness()
     
-    for(i : 0 .. PROC_COUNT-1)
-    {
-        run cache(i);
-        run cpu(i);
-        run snooper(i);
-    }
-    run main_memory();
+    run cache(0, 1);
+    run cpu(0);
+    run snooper(0, 1);
+    run cache(1, 0);
+    run cpu(1);
+    run snooper(1, 0);
     
+    
+    run main_memory();
 }
 
 
