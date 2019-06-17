@@ -11,6 +11,7 @@
 #define VALUE_RANGE 100
 #define ADDRESS_T byte
 #define VALUE_T byte
+#define ID_T bit
 
 mtype:bus_msg =
 {
@@ -42,9 +43,10 @@ mtype:mesi = {
 }
 
 chan cpu_chan[PROC_COUNT] = [0] of {mtype:cpu_msg, ADDRESS_T, VALUE_T };
-chan bus_chan[PROC_COUNT] = [0] of {mtype:bus_msg, byte, ADDRESS_T, VALUE_T }
-chan leader_chan[PROC_COUNT] = [0] of {mtype:leader_msg, byte}
-chan memory_chan = [0] of {mtype:bus_msg, byte, ADDRESS_T, VALUE_T };
+chan bus_chan[PROC_COUNT] = [0] of {mtype:bus_msg, ID_T, ADDRESS_T, VALUE_T }
+chan leader_chan[PROC_COUNT] = [0] of {mtype:leader_msg, ID_T}
+chan memory_chan = [0] of {mtype:bus_msg, ID_T, ADDRESS_T, VALUE_T };
+bool in_way
 
 typedef cache_t
 {
@@ -60,7 +62,7 @@ cache_t caches[PROC_COUNT]
 
 VALUE_T memory[MEMORY_SIZE]
 
-proctype cpu(byte id)
+proctype cpu(ID_T id)
 {
     ADDRESS_T addr
     VALUE_T val
@@ -116,6 +118,8 @@ inline update_used_queue(id, addr)
         if
         :: caches[id].state[throw_addr] == modified ->
             {
+                printf("uinway %d\n", id)
+                in_way = true
                 memory_chan!bus_flush,id,throw_addr,caches[id].val[throw_addr]
             }
         :: else -> skip
@@ -129,7 +133,7 @@ inline update_used_queue(id, addr)
 }
 
 
-proctype cache(byte id) {
+proctype cache(ID_T id) {
     mtype:msg m
     ADDRESS_T addr
     VALUE_T val
@@ -141,9 +145,9 @@ proctype cache(byte id) {
         :: else -> 
             printf("r %d\n", id)
             acquire_lock_and_send_bus_msg(bus_read, id, addr, 0)
-            int av_count = 0
-            int all_count = 0
-            byte rid
+            byte av_count = 0
+            byte all_count = 0
+            ID_T rid
             bool sent_request = false
             bool received_request = false
             
@@ -211,9 +215,9 @@ proctype cache(byte id) {
     od
 }
 
-proctype snooper(byte id)
+proctype snooper(ID_T id)
 {
-    byte rid
+    ID_T rid
     ADDRESS_T addr
     VALUE_T val
     do
@@ -237,10 +241,13 @@ proctype snooper(byte id)
             }
         :: caches[id].state[addr] == modified ->
             {
+                in_way = true
+                memory_chan!bus_flush, id, addr, caches[id].val[addr]
                 caches[id].state[addr] = shared
                 leader_chan[rid]!leader_av,id
                 leader_chan[id]?leader_av,_
                 bus_chan[rid]!bus_flushopt, id, addr, caches[id].val[addr]
+                
             }
         :: caches[id].state[addr] == shared ->    
             {
@@ -275,34 +282,46 @@ proctype snooper(byte id)
         :: else ->
             if
             :: caches[id].state[addr] == modified ->
+                    printf("winway %d\n", id)
+                    in_way = true
                     memory_chan!bus_flush,id,addr,caches[id].val[addr]
             :: else -> skip
             fi
             caches[id].used_queue??eval(addr)
             caches[id].state[addr] = invalid
         fi
-        printf("wsunlock %d\n", id)
+        printf("wsunlocku %d\n", id)
         caches[id].lock = 0
     od
 }
 
 proctype main_memory()
 {
-    byte rid
+    ID_T rid
+    ID_T id
     ADDRESS_T addr
     VALUE_T val
+    
     do
     :: atomic {memory_chan?bus_read,rid,addr,_ ->
-            bus_chan[rid]!bus_flushopt,255,addr,memory[addr]}
-    :: atomic { memory_chan?bus_flush,_,addr, val
-            memory[addr] = val}
+            
+            bus_chan[rid]!bus_flushopt,255,addr,memory[addr]
+            }
+    :: atomic {memory_chan?bus_flush,_,addr,val ->
+    {
+            printf("written %d %d\n", addr, val)
+            memory[addr] = val
+            in_way = false
+            
+    }
+            }
     od
 }
 
 init
 {
-    int i
-    int j
+    byte i
+    byte j
     VALUE_T val
     for(i : 0 .. MEMORY_SIZE-1)
     {
@@ -328,8 +347,8 @@ init
 
 
 
-int never_id
-int never_ad = 0
+byte never_id
+byte never_ad = 0
 mtype:mesi never_seen = invalid 
 bool correct = true
 proctype correctness()
@@ -351,12 +370,12 @@ s:  do
                 {
                     if
                     :: never_seen == invalid && caches[never_id].state[never_ad] != invalid -> never_seen = caches[never_id].state[never_ad]
-                    :: never_seen == exclusive && caches[never_id].state[never_ad] != invalid -> correct = false
-                    :: never_seen == modified && caches[never_id].state[never_ad] != invalid -> correct = false
+                    :: never_seen == exclusive && caches[never_id].state[never_ad] != invalid -> printf("1"); correct = false
+                    :: never_seen == modified && caches[never_id].state[never_ad] != invalid -> printf("2"); correct = false
                     :: (never_seen == shared &&
                         caches[never_id].state[never_ad] != invalid &&
-                        caches[never_id].state[never_ad] != shared) -> correct = false
-                    :: caches[never_id].state[never_ad] != modified && caches[never_id].state[never_ad] != invalid && caches[never_id].val[never_ad] != memory[never_ad] -> correct = false
+                        caches[never_id].state[never_ad] != shared) -> printf("3"); correct = false
+                    :: caches[never_id].state[never_ad] != modified && caches[never_id].state[never_ad] != invalid && caches[never_id].val[never_ad] != memory[never_ad] -> printf("4"); correct = false
                     :: else -> skip
                     fi
                 }
