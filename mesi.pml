@@ -44,7 +44,6 @@ mtype:mesi = {
 
 chan cpu_chan[PROC_COUNT] = [0] of {mtype:cpu_msg, ADDRESS_T, VALUE_T };
 chan bus_chan[PROC_COUNT] = [0] of {mtype:bus_msg, ADDRESS_T, VALUE_T }
-chan leader_chan[PROC_COUNT] = [0] of {mtype:leader_msg, ID_T}
 chan memory_chan = [0] of {mtype:bus_msg, ID_T, ADDRESS_T, VALUE_T };
 bool in_way
 
@@ -147,41 +146,26 @@ proctype cache(ID_T id; ID_T other_cpu)
         :: else -> 
             printf("r %d\n", id)
             acquire_lock_and_send_bus_msg(bus_read, id, addr, 0)
-            byte av_count = 0
-            byte all_count = 0
-            bool sent_request = false
-            bool received_request = false
             
-            do
-            :: all_count == PROC_COUNT - 1 -> break
-            :: all_count < PROC_COUNT - 1 ->
-                if 
-                :: leader_chan[id]?leader_av,_ ->
-                    {
-                        if
-                        :: sent_request -> leader_chan[other_cpu]!leader_na,id
-                        :: else -> leader_chan[other_cpu]!leader_av,id; sent_request = true;
-                        fi
-                        av_count++;
-                        all_count++;
-                    } 
-                :: leader_chan[id]?leader_na,_ -> all_count++
-                fi
-            od
+            bool received_request = false
+            bool cache_to_cache_transfer
             
             if
-            :: av_count == 0 -> memory_chan!bus_read,id,addr,0
-            :: else -> skip
+            :: bus_chan[id]?bus_na,_,_ ->
+                memory_chan!bus_read,id,addr,0
+                bus_chan[id]?bus_flushopt,_,val
+                cache_to_cache_transfer = false
+            :: bus_chan[id]?bus_flushopt,_,val -> cache_to_cache_transfer = true
             fi
             
             
-            bus_chan[id]?bus_flushopt,_,val
+            
             
             update_used_queue(id, addr)
             
             if
-            :: av_count == 0 -> caches[id].state[addr] = exclusive
-            :: av_count >= 0 -> caches[id].state[addr] = shared
+            :: !cache_to_cache_transfer -> caches[id].state[addr] = exclusive
+            :: cache_to_cache_transfer -> caches[id].state[addr] = shared
             fi
             caches[id].val[addr] = val
             
@@ -235,8 +219,6 @@ proctype snooper(ID_T id; ID_T other_cpu)
         :: caches[id].state[addr] == exclusive ->
             {
                 caches[id].state[addr] = shared
-                leader_chan[other_cpu]!leader_av,id
-                leader_chan[id]?leader_av,_
                 bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
             }
         :: caches[id].state[addr] == modified ->
@@ -244,24 +226,17 @@ proctype snooper(ID_T id; ID_T other_cpu)
                 in_way = true
                 memory_chan!bus_flush, id, addr, caches[id].val[addr]
                 caches[id].state[addr] = shared
-                leader_chan[other_cpu]!leader_av,id
-                leader_chan[id]?leader_av,_
                 bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
                 
             }
         :: caches[id].state[addr] == shared ->    
             {
-                leader_chan[other_cpu]!leader_av,id
-                
-                if
-                :: leader_chan[id]?leader_av,_ -> bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
-                :: leader_chan[id]?leader_na,_
-                fi
+                bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
             }        
         :: caches[id].state[addr] == invalid ->
             {
                 printf("rid %d %d\n",id, other_cpu)
-                leader_chan[other_cpu]!leader_na,id
+                bus_chan[other_cpu]!bus_na, addr, 0
             }
         fi
         
