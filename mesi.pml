@@ -141,8 +141,6 @@ proctype cache(ID_T id; ID_T other_cpu)
             fi
             
             
-            
-            
             update_used_queue(id, addr)
             
             if
@@ -199,27 +197,21 @@ proctype snooper(ID_T id; ID_T other_cpu)
             
         if
         :: caches[id].state[addr] == exclusive ->
-            {
-                caches[id].state[addr] = shared
-                bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
-            }
+            caches[id].state[addr] = shared
+            bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
+            
         :: caches[id].state[addr] == modified ->
-            {
-                in_way = true
-                memory_chan!bus_flush, id, addr, caches[id].val[addr]
-                caches[id].state[addr] = shared
-                bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
-                
-            }
+            memory_chan!bus_flush, id, addr, caches[id].val[addr]
+            caches[id].state[addr] = shared
+            bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
+            
         :: caches[id].state[addr] == shared ->    
-            {
                 bus_chan[other_cpu]!bus_flushopt, addr, caches[id].val[addr]
-            }        
+                   
         :: caches[id].state[addr] == invalid ->
-            {
                 printf("rid %d %d\n",id, other_cpu)
                 bus_chan[other_cpu]!bus_na, addr, 0
-            }
+            
         fi
         
         printf("sunlock %d\n", id)
@@ -230,7 +222,7 @@ proctype snooper(ID_T id; ID_T other_cpu)
             caches[id].snooper_waiting = 1
             caches[id].lock == 0
             caches[id].lock = 1
-            printf("wslocked %d", id)
+            printf("wslocked %d\n", id)
             caches[id].snooper_waiting = 0
         }
         
@@ -308,14 +300,9 @@ mtype:mesi never_seen = invalid
 proctype correctness()
 {
 s:  do
-    :: atomic {
-            for(never_id : 0 .. PROC_COUNT - 1)
-            {
-                if
-                :: caches[never_id].lock == 0
-                :: else -> goto s
-                fi
-            }
+    :: d_step {
+            caches[0].lock == 0 && caches[0].snooper_waiting == 0 && caches[1].lock == 0 && caches[1].snooper_waiting == 0
+            
             
             for(never_ad : 0 .. CACHE_SIZE - 1)
             {
@@ -334,6 +321,7 @@ s:  do
                     fi
                 }
             }
+            
             
         }
     od
